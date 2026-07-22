@@ -102,6 +102,28 @@ async function appShellNavigation(request) {
   );
 }
 
+async function connectorNavigation(request) {
+  const runtimeCache = await caches.open(RUNTIME_CACHE);
+  try {
+    const response = await fetch(request);
+    if (isCacheableResponse(response)) {
+      await runtimeCache.put(request, response.clone());
+      await trimRuntimeCache(runtimeCache, 120);
+    }
+    return response;
+  } catch {
+    const shellCache = await caches.open(APP_SHELL_CACHE);
+    const cached =
+      (await shellCache.match(request, { ignoreSearch: true }))
+      || (await runtimeCache.match(request, { ignoreSearch: true }))
+      || (await matchLegacyRuntimeCache(request));
+    return cached || new Response('WebAuthn connector is unavailable while offline.', {
+      status: 503,
+      headers: { 'Content-Type': 'text/plain; charset=UTF-8' },
+    });
+  }
+}
+
 async function trimRuntimeCache(cache, maxEntries) {
   const keys = await cache.keys();
   if (keys.length <= maxEntries) return;
@@ -144,6 +166,13 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(request.url);
   if (NEVER_CACHE_PATH_RE.test(url.pathname)) return;
+
+  // Connector navigations are protocol pages, not application routes. They must
+  // never be replaced with the SPA shell, even when the device is offline.
+  if (url.pathname.endsWith('-connector.html')) {
+    event.respondWith(connectorNavigation(request));
+    return;
+  }
 
   if (request.mode === 'navigate') {
     event.respondWith(appShellNavigation(request));
